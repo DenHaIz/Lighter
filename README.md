@@ -10,7 +10,7 @@ Windows startup manager in one small `.exe`.
 - View running processes and end them
 - Dark and light theme, English and Russian
 
-Build from source: run `build.cmd` (no SDK needed).
+Build from source: run `build.cmd` (no SDK needed). Developer notes: [HANDOFF.md](HANDOFF.md) (in Russian).
 
 ---
 
@@ -24,7 +24,7 @@ Build from source: run `build.cmd` (no SDK needed).
 - Список запущенных процессов с возможностью их завершить
 - Тёмная и светлая тема, русский и английский язык
 
-Сборка из исходников: запустите `build.cmd` (SDK не нужен).
+Сборка из исходников: запустите `build.cmd` (SDK не нужен). Заметки для разработчиков: [HANDOFF.md](HANDOFF.md).
 
 ---
 
