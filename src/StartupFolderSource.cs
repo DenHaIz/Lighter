@@ -1,13 +1,15 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
-using System.Runtime.InteropServices;
 using Microsoft.Win32;
 
 namespace Lighter
 {
     static class StartupFolderSource
     {
+        const string ShellFolders = @"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders";
+
+        /// <summary>The all-users folder plus the Startup folder of every user profile on the PC.</summary>
         public static List<AutorunItem> Load()
         {
             var list = new List<AutorunItem>();
@@ -16,10 +18,26 @@ namespace Lighter
             catch { }
             try
             {
-                AddFolder(list, shell, Environment.GetFolderPath(Environment.SpecialFolder.Startup),
-                    RegistryHive.CurrentUser, false);
-                AddFolder(list, shell, Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup),
-                    RegistryHive.LocalMachine, true);
+                HashSet<string> off;
+                using (var root = HiveRoot.Open(null, false))
+                    off = StartupApproved.ReadDisabled(root.Key, "StartupFolder");
+                AddFolder(list, shell, Environment.GetFolderPath(Environment.SpecialFolder.CommonStartup), null, off);
+
+                foreach (var user in UserProfile.All())
+                {
+                    try
+                    {
+                        string dir;
+                        // Read what is needed and release the hive before touching files.
+                        using (var root = HiveRoot.Open(user, false))
+                        {
+                            off = StartupApproved.ReadDisabled(root.Key, "StartupFolder");
+                            dir = user.IsMe ? Environment.GetFolderPath(Environment.SpecialFolder.Startup) : StartupDir(root.Key, user);
+                        }
+                        AddFolder(list, shell, dir, user, off);
+                    }
+                    catch { }
+                }
             }
             finally
             {
@@ -28,7 +46,16 @@ namespace Lighter
             return list;
         }
 
-        static void AddFolder(List<AutorunItem> list, object shell, string dir, RegistryHive hive, bool common)
+        static string StartupDir(RegistryKey root, UserProfile user)
+        {
+            string path = null;
+            using (var k = root.OpenSubKey(ShellFolders))
+                if (k != null) path = k.GetValue("Startup", null, RegistryValueOptions.DoNotExpandEnvironmentNames) as string;
+            if (string.IsNullOrEmpty(path)) path = @"%USERPROFILE%\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup";
+            return user.ExpandPath(path);
+        }
+
+        static void AddFolder(List<AutorunItem> list, object shell, string dir, UserProfile user, HashSet<string> off)
         {
             if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return;
             foreach (string file in Directory.GetFiles(dir))
@@ -57,16 +84,16 @@ namespace Lighter
                     FilePath = file,
                     ExePath = target,
                     Command = PathUtil.Quote(target) + (args.Length > 0 ? " " + args : ""),
-                    Hive = hive,
+                    User = user,
                     ApprovedSub = "StartupFolder",
                     ApprovedName = fileName,
-                    CommonFolder = common,
+                    CommonFolder = user == null,
                     CanToggle = true,
                     CanDelete = true,
+                    Enabled = !off.Contains(fileName),
                 };
                 it.FileExists = PathUtil.SafeExists(target) || Directory.Exists(target);
                 it.Publisher = PathUtil.GetPublisher(target);
-                it.Enabled = StartupApproved.IsEnabled(hive, it.ApprovedSub, fileName);
                 list.Add(it);
             }
         }
@@ -75,7 +102,8 @@ namespace Lighter
         public static string Delete(AutorunItem it)
         {
             string backup = Backup.MoveFile(it.FilePath);
-            StartupApproved.Remove(it.Hive, it.ApprovedSub, it.ApprovedName);
+            using (var root = HiveRoot.Open(it.User, true))
+                StartupApproved.Remove(root.Key, it.ApprovedSub, it.ApprovedName);
             return backup;
         }
     }

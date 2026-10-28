@@ -1,10 +1,14 @@
 using System;
 using System.Collections.Generic;
+using System.Security.Principal;
 using System.Text;
 
 namespace Lighter
 {
-    /// <summary>Task Scheduler tasks that start at logon or at boot (COM "Schedule.Service").</summary>
+    /// <summary>
+    /// Task Scheduler (COM "Schedule.Service"): tasks that start at logon or at boot, plus every third-party task
+    /// with any trigger (updaters on a schedule etc.). Microsoft tasks are listed only for logon/boot.
+    /// </summary>
     static class TaskSchedulerSource
     {
         const int EnumHidden = 1;
@@ -42,7 +46,13 @@ namespace Lighter
                             AutorunItem it = FromTask(task, folderPath);
                             if (it != null) list.Add(it);
                         }
-                        catch { }
+                        catch
+                        {
+                            // The task is listed but its definition cannot be read: still show it
+                            // (unless it is a Microsoft task) so nothing is hidden silently.
+                            AutorunItem it = Unreadable(task, folderPath);
+                            if (it != null) list.Add(it);
+                        }
                         finally { Com.Release(task); }
                     }
                     Com.Release(tasks);
@@ -60,16 +70,38 @@ namespace Lighter
             finally { Com.Release(folder); }
         }
 
+        static readonly string[] TriggerTags =
+        {
+            "<LogonTrigger", "<BootTrigger", "<TimeTrigger", "<CalendarTrigger", "<IdleTrigger",
+            "<EventTrigger", "<SessionStateChangeTrigger", "<RegistrationTrigger",
+        };
+
+        static readonly TaskTriggers[] TriggerFlags =
+        {
+            TaskTriggers.Logon, TaskTriggers.Boot, TaskTriggers.Schedule, TaskTriggers.Schedule, TaskTriggers.Idle,
+            TaskTriggers.Event, TaskTriggers.Session, TaskTriggers.Registration,
+        };
+
+        static bool IsSystemFolder(string folderPath)
+        {
+            return folderPath.StartsWith("\\Microsoft", StringComparison.OrdinalIgnoreCase);
+        }
+
         /// <summary>
-        /// One COM call per task: the task XML. A plain text check rejects the vast majority of tasks
-        /// (no logon/boot trigger) before anything else is read.
+        /// One COM call per task: the task XML. A plain text check of the triggers rejects most tasks
+        /// before anything else is read.
         /// </summary>
         static AutorunItem FromTask(object task, string folderPath)
         {
             string xml = (string)Com.Get(task, "Xml");
-            bool logon = xml.IndexOf("<LogonTrigger", StringComparison.Ordinal) >= 0;
-            bool boot = xml.IndexOf("<BootTrigger", StringComparison.Ordinal) >= 0;
-            if (!logon && !boot) return null;
+            bool system = IsSystemFolder(folderPath);
+            var triggers = TaskTriggers.Unknown;
+            for (int i = 0; i < TriggerTags.Length; i++)
+                if (xml.IndexOf(TriggerTags[i], StringComparison.Ordinal) >= 0) triggers |= TriggerFlags[i];
+            // Microsoft tasks: only logon/boot (the rest is hundreds of maintenance tasks).
+            // Third-party tasks: anything that starts by itself.
+            if (system ? (triggers & (TaskTriggers.Logon | TaskTriggers.Boot)) == 0 : triggers == TaskTriggers.Unknown)
+                return null;
 
             string cmd = "", exe = "";
             int exec = xml.IndexOf("<Exec>", StringComparison.Ordinal);
@@ -97,9 +129,9 @@ namespace Lighter
                 ExePath = exe,
                 Enabled = enabled,
                 TaskFolder = folderPath,
-                OnLogon = logon,
-                OnBoot = boot,
-                IsSystem = folderPath.StartsWith("\\Microsoft", StringComparison.OrdinalIgnoreCase),
+                Triggers = triggers,
+                RunAs = RunAsName(xml),
+                IsSystem = system,
                 CanToggle = true,
                 CanDelete = true,
             };
@@ -111,6 +143,55 @@ namespace Lighter
                 if (author.Length > 0 && !author.StartsWith("$(")) it.Publisher = author;
             }
             return it;
+        }
+
+        static AutorunItem Unreadable(object task, string folderPath)
+        {
+            if (IsSystemFolder(folderPath)) return null;
+            try
+            {
+                var it = new AutorunItem
+                {
+                    Kind = SourceKind.Task,
+                    Name = (string)Com.Get(task, "Name"),
+                    TaskPath = (string)Com.Get(task, "Path"),
+                    TaskFolder = folderPath,
+                    CanToggle = true,
+                    CanDelete = true,
+                };
+                try { it.Enabled = (bool)Com.Get(task, "Enabled"); }
+                catch { }
+                return it;
+            }
+            catch { return null; }
+        }
+
+        static readonly Dictionary<string, string> AccountNames = new Dictionary<string, string>();
+
+        /// <summary>
+        /// The account from &lt;Principal&gt;: a user name (without domain), SYSTEM, or a group such as
+        /// "Users" (the task then runs for everyone who logs on).
+        /// </summary>
+        static string RunAsName(string xml)
+        {
+            int p = xml.IndexOf("<Principals>", StringComparison.Ordinal);
+            if (p < 0) return "";
+            string id = Tag(xml, "UserId", p, -1);
+            if (id.Length == 0) id = Tag(xml, "GroupId", p, -1);
+            if (id.Length == 0) return "";
+            string name;
+            lock (AccountNames)
+                if (AccountNames.TryGetValue(id, out name)) return name;
+            name = id;
+            if (id.StartsWith("S-1-", StringComparison.Ordinal))
+            {
+                try { name = new SecurityIdentifier(id).Translate(typeof(NTAccount)).Value; }
+                catch { }
+            }
+            int slash = name.LastIndexOf('\\');
+            if (slash >= 0) name = name.Substring(slash + 1);
+            lock (AccountNames) AccountNames[id] = name;
+            return name;
         }
 
         /// <summary>Text of the first &lt;name&gt; element between from and limit (-1 = end of text).</summary>

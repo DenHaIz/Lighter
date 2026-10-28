@@ -1,11 +1,18 @@
 using System;
-using Microsoft.Win32;
+using System.Collections.Generic;
 
 namespace Lighter
 {
     enum SourceKind { Registry, StartupFolder, Task, Service }
 
     enum RowKind { Normal, Dim, Danger }
+
+    /// <summary>Task Scheduler trigger types of a task; Unknown = the task definition could not be read.</summary>
+    [Flags]
+    enum TaskTriggers
+    {
+        Unknown = 0, Logon = 1, Boot = 2, Schedule = 4, Idle = 8, Event = 16, Session = 32, Registration = 64,
+    }
 
     /// <summary>What the list needs to draw a row: text color, icon and status dot.</summary>
     interface IRowInfo
@@ -30,7 +37,7 @@ namespace Lighter
         public bool IsSystem;
 
         // Registry / startup folder
-        public RegistryHive Hive;
+        public UserProfile User;     // whose HKCU / Startup folder; null = all users (HKLM, common folder)
         public string RegPath;
         public string ApprovedSub;   // StartupApproved subkey, null when Windows cannot disable the entry
         public string ApprovedName;
@@ -43,7 +50,8 @@ namespace Lighter
         // Scheduler / services
         public string TaskPath;
         public string TaskFolder;
-        public bool OnLogon, OnBoot;
+        public TaskTriggers Triggers;
+        public string RunAs = "";    // account the task runs as
         public string ServiceName;
         public bool Delayed;
         public bool? Running;
@@ -68,20 +76,38 @@ namespace Lighter
                 switch (Kind)
                 {
                     case SourceKind.Registry:
-                        return L.T("Реестр: ", "Registry: ") + RegLabel + (Wow32 ? L.T(" (32-бит)", " (32-bit)") : "");
+                        return L.T("Реестр: ", "Registry: ") + RegLabel + (Wow32 ? L.T(" (32-бит)", " (32-bit)") : "") + UserSuffix;
                     case SourceKind.StartupFolder:
-                        return CommonFolder ? L.T("Папка автозагрузки (все пользователи)", "Startup folder (all users)")
-                            : L.T("Папка автозагрузки (пользователь)", "Startup folder (current user)");
+                        return CommonFolder ? L.T("Папка автозагрузки · все пользователи", "Startup folder · all users")
+                            : L.T("Папка автозагрузки", "Startup folder") + UserSuffix;
                     case SourceKind.Task:
-                        string trigger = OnLogon && OnBoot ? L.T("при входе и загрузке", "at logon and boot")
-                            : OnLogon ? L.T("при входе", "at logon") : L.T("при загрузке", "at boot");
-                        return L.T("Планировщик: ", "Scheduler: ") + TaskFolder + " · " + trigger;
+                        return L.T("Планировщик: ", "Scheduler: ") + TaskFolder + " · " + TriggerText(Triggers)
+                            + (RunAs.Length > 0 ? " · " + RunAs : "");
                     default:
                         string state = !Running.HasValue ? ""
                             : " · " + (Running.Value ? L.T("работает", "running") : L.T("остановлена", "stopped"));
                         return L.T("Служба: ", "Service: ") + ServiceName + state;
                 }
             }
+        }
+
+        string UserSuffix
+        {
+            get { return User == null ? "" : " · " + User.Name; }
+        }
+
+        static string TriggerText(TaskTriggers t)
+        {
+            if (t == TaskTriggers.Unknown) return L.T("нет доступа к заданию", "no access to the task");
+            var parts = new List<string>();
+            if ((t & TaskTriggers.Logon) != 0) parts.Add(L.T("при входе", "at logon"));
+            if ((t & TaskTriggers.Boot) != 0) parts.Add(L.T("при загрузке", "at boot"));
+            if ((t & TaskTriggers.Schedule) != 0) parts.Add(L.T("по расписанию", "on schedule"));
+            if ((t & TaskTriggers.Idle) != 0) parts.Add(L.T("при простое", "on idle"));
+            if ((t & TaskTriggers.Event) != 0) parts.Add(L.T("по событию", "on event"));
+            if ((t & TaskTriggers.Session) != 0) parts.Add(L.T("при подключении/блокировке", "on connect/lock"));
+            if ((t & TaskTriggers.Registration) != 0) parts.Add(L.T("при создании", "on creation"));
+            return string.Join(", ", parts);
         }
 
         public RowKind RowKind
@@ -117,7 +143,8 @@ namespace Lighter
                 case SourceKind.StartupFolder:
                     if (it.ApprovedSub == null)
                         throw new InvalidOperationException(L.T("Эту запись нельзя отключить, только удалить.", "This entry cannot be disabled, only deleted."));
-                    StartupApproved.Set(it.Hive, it.ApprovedSub, it.ApprovedName, enabled);
+                    using (var root = HiveRoot.Open(it.User, true))
+                        StartupApproved.Set(root.Key, it.ApprovedSub, it.ApprovedName, enabled);
                     it.Enabled = enabled;
                     break;
                 case SourceKind.Task:
