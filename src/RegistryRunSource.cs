@@ -29,12 +29,14 @@ namespace Lighter
             new RunKey(Cv + "RunOnce", null, @"HKLM\RunOnce", false, true),
             new RunKey(Cv32 + "Run", "Run32", @"HKLM\Run", true, false),
             new RunKey(Cv32 + "RunOnce", null, @"HKLM\RunOnce", true, true),
+            new RunKey(Cv + @"Policies\Explorer\Run", null, @"HKLM\Policies\Run", false, false),
         };
 
         static readonly RunKey[] UserKeys =
         {
             new RunKey(Cv + "Run", "Run", @"HKCU\Run", false, false),
             new RunKey(Cv + "RunOnce", null, @"HKCU\RunOnce", false, true),
+            new RunKey(Cv + @"Policies\Explorer\Run", null, @"HKCU\Policies\Run", false, false),
         };
 
         /// <summary>HKLM plus the HKCU of every user profile on the PC (users that cannot be read are skipped).</summary>
@@ -42,13 +44,19 @@ namespace Lighter
         {
             var list = new List<AutorunItem>();
             using (var root = HiveRoot.Open(null, false))
+            {
                 AddKeys(list, root.Key, null, MachineKeys);
+                ExtraLocations.AddMachine(list, root.Key);
+            }
             foreach (var user in UserProfile.All())
             {
                 try
                 {
                     using (var root = HiveRoot.Open(user, false))
+                    {
                         AddKeys(list, root.Key, user, UserKeys);
+                        ExtraLocations.AddUser(list, root.Key, user);
+                    }
                 }
                 catch { }
             }
@@ -81,11 +89,12 @@ namespace Lighter
                             RegLabel = rk.Label,
                             Wow32 = rk.Wow32,
                             Once = rk.Once,
+                            // Policies\Run has no switch in Windows: delete only.
                             CanToggle = rk.Approved != null,
                             CanDelete = true,
                             Enabled = off == null || !off.Contains(name),
                         };
-                        it.ExePath = PathUtil.ExtractExe(it.Command);
+                        it.ExePath = it.SignPath = PathUtil.ExtractExe(it.Command);
                         it.FileExists = PathUtil.SafeExists(it.ExePath);
                         it.Publisher = PathUtil.GetPublisher(it.ExePath);
                         list.Add(it);

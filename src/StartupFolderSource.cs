@@ -83,6 +83,7 @@ namespace Lighter
                     Name = Path.GetFileNameWithoutExtension(file),
                     FilePath = file,
                     ExePath = target,
+                    SignPath = target,
                     Command = PathUtil.Quote(target) + (args.Length > 0 ? " " + args : ""),
                     User = user,
                     ApprovedSub = "StartupFolder",

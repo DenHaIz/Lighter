@@ -28,7 +28,7 @@ namespace Lighter
                         bool disabledByUs = mode == ServiceStartMode.Disabled && ours.ContainsKey(sc.ServiceName);
                         if (mode != ServiceStartMode.Automatic && !disabledByUs) continue;
 
-                        string image = "", dll = null;
+                        string image = "", dll = null, account = "";
                         bool delayed = false;
                         try
                         {
@@ -38,6 +38,7 @@ namespace Lighter
                                 {
                                     image = Convert.ToString(k.GetValue("ImagePath")) ?? "";
                                     delayed = Convert.ToInt32(k.GetValue("DelayedAutostart", 0)) == 1;
+                                    account = Convert.ToString(k.GetValue("ObjectName")) ?? "";
                                     using (var p = k.OpenSubKey("Parameters"))
                                         if (p != null) dll = p.GetValue("ServiceDll") as string;
                                 }
@@ -65,8 +66,10 @@ namespace Lighter
                         it.ExePath = PathUtil.ExtractExe(image);
                         it.FileExists = image.Length == 0 || PathUtil.SafeExists(it.ExePath);
                         // svchost-hosted services: the DLL tells who actually made the service.
-                        it.Publisher = PathUtil.GetPublisher(PathUtil.SafeExists(dll) ? dll : it.ExePath);
-                        it.IsSystem = it.Publisher.IndexOf("Microsoft", StringComparison.OrdinalIgnoreCase) >= 0;
+                        if (dll != null) dll = Environment.ExpandEnvironmentVariables(dll);
+                        it.SignPath = PathUtil.SafeExists(dll) ? dll : it.ExePath;
+                        it.Publisher = PathUtil.GetPublisher(it.SignPath);
+                        it.Account = Accounts.Name(account);
                         list.Add(it);
                     }
                 }

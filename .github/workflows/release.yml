@@ -41,4 +41,8 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create $env:GITHUB_REF_NAME bin\Lighter.exe bin\Lighter.exe.sha256 --title "Lighter $env:GITHUB_REF_NAME" --generate-notes
+        run: |
+          # Release notes: .github/notes/<tag>.md when it exists, otherwise generated from the commits.
+          $notes = ".github/notes/$env:GITHUB_REF_NAME.md"
+          if (Test-Path $notes) { $extra = @('--notes-file', $notes) } else { $extra = @('--generate-notes') }
+          gh release create $env:GITHUB_REF_NAME bin\Lighter.exe bin\Lighter.exe.sha256 --title "Lighter $env:GITHUB_REF_NAME" @extra

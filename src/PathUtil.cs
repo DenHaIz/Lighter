@@ -95,6 +95,77 @@ namespace Lighter
             return result;
         }
 
+        // Programs that run another file given on their command line.
+        static readonly HashSet<string> launchers = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            "rundll32.exe", "regsvr32.exe", "cmd.exe", "powershell.exe", "pwsh.exe", "wscript.exe", "cscript.exe",
+            "mshta.exe", "msiexec.exe", "conhost.exe", "explorer.exe", "dllhost.exe"
+        };
+
+        public static bool IsLauncher(string path)
+        {
+            try { return !string.IsNullOrEmpty(path) && launchers.Contains(Path.GetFileName(path)); }
+            catch { return false; }
+        }
+
+        /// <summary>
+        /// The first existing file named in a command's arguments ("rundll32.exe C:\x\y.dll,Entry" gives y.dll;
+        /// bare file names are looked up in System32), or null.
+        /// </summary>
+        public static string FileInArgs(string command)
+        {
+            if (string.IsNullOrEmpty(command)) return null;
+            string s = Environment.ExpandEnvironmentVariables(command.Trim());
+            int i;
+            // skip the program itself
+            if (s.StartsWith("\"")) { int e = s.IndexOf('"', 1); i = e < 0 ? s.Length : e + 1; }
+            else { int e = s.IndexOf(' '); i = e < 0 ? s.Length : e; }
+            var tokens = new List<string>();
+            while (i < s.Length)
+            {
+                while (i < s.Length && char.IsWhiteSpace(s[i])) i++;
+                if (i >= s.Length) break;
+                int start = i;
+                if (s[i] == '"')
+                {
+                    int e = s.IndexOf('"', i + 1);
+                    if (e < 0) e = s.Length;
+                    tokens.Add(s.Substring(i + 1, e - i - 1));
+                    i = e + 1;
+                }
+                else
+                {
+                    while (i < s.Length && !char.IsWhiteSpace(s[i])) i++;
+                    tokens.Add(s.Substring(start, i - start));
+                }
+            }
+            foreach (string raw in tokens)
+            {
+                string t = raw;
+                int colon = t.IndexOf(':');
+                if (t.StartsWith("/") && colon > 0) t = t.Substring(colon + 1);   // regsvr32 /i:file
+                int comma = t.IndexOf(',');
+                if (comma > 0) t = t.Substring(0, comma);                          // rundll32 file.dll,Entry
+                t = t.Trim('"', ' ');
+                if (t.Length < 4 || t.StartsWith("-") || t.StartsWith("/")) continue;
+                try
+                {
+                    if (Path.IsPathRooted(t))
+                    {
+                        if (SafeExists(t)) return t;
+                        continue;
+                    }
+                    if (Path.GetExtension(t).Length > 1)
+                    {
+                        string sys = Path.Combine(Environment.SystemDirectory, t);
+                        if (SafeExists(sys)) return sys;
+                    }
+                }
+                catch { }
+            }
+            return null;
+        }
+
         public static bool IsHost(string path)
         {
             try { return hosts.Contains(Path.GetFileName(path)); }

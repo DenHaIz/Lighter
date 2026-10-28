@@ -26,6 +26,7 @@ namespace Lighter
             public Func<float, float> Ease;
             public Func<bool> Frame;   // continuous callback; returns false to stop
             public bool Dead;
+            public bool Started;
         }
 
         static readonly List<Tween> tweens = new List<Tween>();
@@ -77,6 +78,8 @@ namespace Lighter
                 Cancel(tw.Key);
                 byKey[tw.Key] = tw;
             }
+            // The clock starts at the tween's first frame, not now: work done between starting an
+            // animation and the next frame (snapshots, layout) must not eat into it and make it jump.
             tw.Start = Now;
             tweens.Add(tw);
             EnsureClock();
@@ -100,7 +103,34 @@ namespace Lighter
         static void OnFrame(object state)
         {
             double now = Interlocked.Read(ref frameStamp) / TicksPerMs;
+            double began = FrameLog != null ? Now : 0;
             Interlocked.Exchange(ref posted, 0);
+            RunTweens(now);
+            if (FrameLog != null) Log(string.Format(System.Globalization.CultureInfo.InvariantCulture,
+                "F\t{0:F1}\t{1:F1}\t{2:F1}\t{3}", now, began - now, Now - began, tweens.Count));
+        }
+
+        // ---------- frame log (diagnostics: set LIGHTER_FRAMELOG to a file path) ----------
+
+        /// <summary>Lines: "F stamp lateness work tweens" per frame, plus free-form notes. Null when off.</summary>
+        public static readonly string FrameLog = Environment.GetEnvironmentVariable("LIGHTER_FRAMELOG");
+        static readonly System.Text.StringBuilder logBuf = new System.Text.StringBuilder();
+        static double logFlushed;
+
+        public static void Log(string line)
+        {
+            if (FrameLog == null) return;
+            logBuf.Append(line).Append('\n');
+            if (logBuf.Length > 8192 || Now - logFlushed > 1000)
+            {
+                logFlushed = Now;
+                try { System.IO.File.AppendAllText(FrameLog, logBuf.ToString()); } catch { }
+                logBuf.Clear();
+            }
+        }
+
+        static void RunTweens(double now)
+        {
             foreach (var tw in tweens.ToArray())
             {
                 if (tw.Dead) { tweens.Remove(tw); continue; }
@@ -110,6 +140,11 @@ namespace Lighter
                     {
                         if (!tw.Frame()) Finish(tw);
                         continue;
+                    }
+                    if (!tw.Started)
+                    {
+                        tw.Started = true;
+                        tw.Start = Math.Max(tw.Start, now - FramePeriod);
                     }
                     float t = (float)Math.Max(0, Math.Min(1, (now - tw.Start) / tw.Duration));
                     bool finished = t >= 1f;
@@ -121,6 +156,9 @@ namespace Lighter
             }
             if (tweens.Count == 0) active = false;
         }
+
+        /// <summary>Last measured display period (ms).</summary>
+        static double FramePeriod = 1000.0 / 60;
 
         static void Finish(Tween tw)
         {
@@ -189,6 +227,7 @@ namespace Lighter
                     if (next <= now) next = now + period;
                 }
 
+                FramePeriod = period / TicksPerMs;
                 WaitUntil(next);
                 Interlocked.Exchange(ref frameStamp, next);
                 if (Interlocked.CompareExchange(ref posted, 1, 0) == 0) ui.Post(OnFrame, null);

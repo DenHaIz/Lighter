@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Security.Principal;
 using System.Text;
 
 namespace Lighter
@@ -127,6 +126,7 @@ namespace Lighter
                 TaskPath = (string)Com.Get(task, "Path"),
                 Command = cmd,
                 ExePath = exe,
+                SignPath = exe,
                 Enabled = enabled,
                 TaskFolder = folderPath,
                 Triggers = triggers,
@@ -166,8 +166,6 @@ namespace Lighter
             catch { return null; }
         }
 
-        static readonly Dictionary<string, string> AccountNames = new Dictionary<string, string>();
-
         /// <summary>
         /// The account from &lt;Principal&gt;: a user name (without domain), SYSTEM, or a group such as
         /// "Users" (the task then runs for everyone who logs on).
@@ -178,20 +176,7 @@ namespace Lighter
             if (p < 0) return "";
             string id = Tag(xml, "UserId", p, -1);
             if (id.Length == 0) id = Tag(xml, "GroupId", p, -1);
-            if (id.Length == 0) return "";
-            string name;
-            lock (AccountNames)
-                if (AccountNames.TryGetValue(id, out name)) return name;
-            name = id;
-            if (id.StartsWith("S-1-", StringComparison.Ordinal))
-            {
-                try { name = new SecurityIdentifier(id).Translate(typeof(NTAccount)).Value; }
-                catch { }
-            }
-            int slash = name.LastIndexOf('\\');
-            if (slash >= 0) name = name.Substring(slash + 1);
-            lock (AccountNames) AccountNames[id] = name;
-            return name;
+            return Accounts.Name(id);
         }
 
         /// <summary>Text of the first &lt;name&gt; element between from and limit (-1 = end of text).</summary>

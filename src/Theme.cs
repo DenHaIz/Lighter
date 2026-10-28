@@ -2,7 +2,6 @@ using System;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Runtime.InteropServices;
-using Microsoft.Win32;
 
 namespace Lighter
 {
@@ -16,13 +15,16 @@ namespace Lighter
 
     static class Theme
     {
+        /// <summary>Height of buttons, switches and search fields, in design pixels: one row lines up.</summary>
+        public const int ControlH = 36;
+
         public static readonly Palette Dark = new Palette
         {
             IsDark = true,
             Bg = Hex(0x1B1C1F), Surface = Hex(0x232428), SurfaceAlt = Hex(0x2B2D31),
             Hover = Hex(0x33353B), Pressed = Hex(0x3D4048), Border = Hex(0x393B41),
-            Text = Hex(0xE6E7EA), TextDim = Hex(0x9A9DA6), Accent = Hex(0x4C8DFF), AccentText = Color.White,
-            Selected = Hex(0x2C4370), SelectedInactive = Hex(0x34373E),
+            Text = Hex(0xE6E7EA), TextDim = Hex(0x9A9DA6), Accent = Hex(0x8B5CF6), AccentText = Color.White,
+            Selected = Hex(0x3B2E66), SelectedInactive = Hex(0x34373E),
             Danger = Hex(0xFF6B6B), Success = Hex(0x3DD68C), Warning = Hex(0xF5B83D),
         };
 
@@ -31,29 +33,71 @@ namespace Lighter
             IsDark = false,
             Bg = Hex(0xF3F4F6), Surface = Hex(0xFFFFFF), SurfaceAlt = Hex(0xEDEEF1),
             Hover = Hex(0xE4E6EB), Pressed = Hex(0xD7DAE0), Border = Hex(0xD9DCE2),
-            Text = Hex(0x1F2328), TextDim = Hex(0x6B7280), Accent = Hex(0x2563EB), AccentText = Color.White,
-            Selected = Hex(0xD6E4FD), SelectedInactive = Hex(0xE6E8EC),
+            Text = Hex(0x1F2328), TextDim = Hex(0x6B7280), Accent = Hex(0x7C3AED), AccentText = Color.White,
+            Selected = Hex(0xEDE5FE), SelectedInactive = Hex(0xE6E8EC),
             Danger = Hex(0xD93636), Success = Hex(0x16A34A), Warning = Hex(0xD97706),
         };
 
         public static Palette Current = Dark;
 
+        /// <summary>Pixels per design pixel: monitor DPI times the window zoom.</summary>
         public static float Scale = 1f;
-        public static Font UiFont, UiBold, TitleFont, Glyph, GlyphSmall;
+        /// <summary>Monitor DPI scale (1 = 96 dpi).</summary>
+        public static float Dpi = 1f;
+        /// <summary>Interface zoom that follows the window size (1 = default window, up to MaxZoom).</summary>
+        public static float Zoom = 1f;
+        public const float MaxZoom = 1.6f;
+        public static Font UiFont, UiBold, SmallFont, TitleFont, HeadFont, BigFont, Glyph, GlyphSmall, GlyphLarge, GlyphHuge;
         public static bool HasGlyphs;
 
-        const string SettingsKey = @"Software\Lighter";
+        // One font set per zoom step, kept: controls switch between them and old ones stay valid.
+        static readonly System.Collections.Generic.Dictionary<int, Font[]> fontSets = new System.Collections.Generic.Dictionary<int, Font[]>();
 
         public static void Init(float dpiScale)
         {
-            Scale = dpiScale;
-            UiFont = new Font("Segoe UI", 9.5f);
-            UiBold = new Font("Segoe UI Semibold", 9.5f);
-            TitleFont = new Font("Segoe UI Semibold", 13f);
-            Glyph = new Font("Segoe MDL2 Assets", 10f);
-            GlyphSmall = new Font("Segoe MDL2 Assets", 8f);
+            Dpi = dpiScale;
+            Zoom = 0;
+            SetZoom(1f);
             HasGlyphs = Glyph.Name == "Segoe MDL2 Assets";
-            Current = LoadDark() ? Dark : Light;
+            Current = Settings.Theme == "light" ? Light : Dark;
+        }
+
+        /// <summary>Switches sizes and fonts to the given zoom; false when it is already in effect.</summary>
+        public static bool SetZoom(float zoom)
+        {
+            zoom = (float)Math.Round(Math.Max(1f, Math.Min(MaxZoom, zoom)) * 20) / 20;
+            if (Math.Abs(zoom - Zoom) < 0.001f) return false;
+            Zoom = zoom;
+            Scale = Dpi * zoom;
+            int key = (int)Math.Round(zoom * 100);
+            Font[] f;
+            if (!fontSets.TryGetValue(key, out f))
+            {
+                // Font sizes are in points, which GDI already scales by DPI: only the zoom applies here.
+                f = new[]
+                {
+                    new Font("Segoe UI", 9.5f * zoom), new Font("Segoe UI Semibold", 9.5f * zoom), new Font("Segoe UI", 9f * zoom),
+                    new Font("Segoe UI Semibold", 13f * zoom), new Font("Segoe UI Semibold", 11f * zoom), new Font("Segoe UI Semibold", 24f * zoom),
+                    new Font("Segoe MDL2 Assets", 10f * zoom), new Font("Segoe MDL2 Assets", 8f * zoom),
+                    new Font("Segoe MDL2 Assets", 14f * zoom), new Font("Segoe MDL2 Assets", 26f * zoom),
+                };
+                fontSets[key] = f;
+            }
+            UiFont = f[0]; UiBold = f[1]; SmallFont = f[2]; TitleFont = f[3]; HeadFont = f[4]; BigFont = f[5];
+            Glyph = f[6]; GlyphSmall = f[7]; GlyphLarge = f[8]; GlyphHuge = f[9];
+            return true;
+        }
+
+        /// <summary>The same font role (body, bold, small...) at the current zoom; other fonts are returned as they are.</summary>
+        public static Font Remap(Font font)
+        {
+            Font[] now = fontSets[(int)Math.Round(Zoom * 100)];
+            foreach (var set in fontSets.Values)
+            {
+                int i = Array.IndexOf(set, font);
+                if (i >= 0) return now[i];
+            }
+            return font;
         }
 
         public static int S(int v)
@@ -62,24 +106,10 @@ namespace Lighter
         }
 
         /// <summary>Dark is the default; the choice is remembered in HKCU\Software\Lighter.</summary>
-        static bool LoadDark()
-        {
-            try
-            {
-                using (var k = Registry.CurrentUser.OpenSubKey(SettingsKey))
-                    return k == null || !"light".Equals(k.GetValue("Theme") as string);
-            }
-            catch { return true; }
-        }
-
         public static void Save()
         {
-            try
-            {
-                using (var k = Registry.CurrentUser.CreateSubKey(SettingsKey))
-                    k.SetValue("Theme", Current.IsDark ? "dark" : "light");
-            }
-            catch { }
+            Settings.Theme = Current.IsDark ? "dark" : "light";
+            Settings.Save();
         }
 
         static Color Hex(int rgb)

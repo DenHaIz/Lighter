@@ -34,7 +34,7 @@ namespace Lighter
         }
 
         /// <summary>Writes one registry value as a .reg file that can be double-clicked to restore it.</summary>
-        public static string ExportRegValue(string keyFullName, string valueName, object value, RegistryValueKind kind)
+        public static string ExportRegValue(string keyFullName, string valueName, object value, RegistryValueKind kind, string fileName = null)
         {
             var sb = new StringBuilder();
             sb.Append("Windows Registry Editor Version 5.00\r\n\r\n");
@@ -62,7 +62,7 @@ namespace Lighter
                     break;
             }
             sb.Append("\r\n");
-            return SaveText(valueName, ".reg", sb.ToString());
+            return SaveText(fileName ?? valueName, ".reg", sb.ToString());
         }
 
         static string RegQuote(string s)

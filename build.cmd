@@ -13,11 +13,11 @@ if not exist "%CSC%" (
 if not exist bin mkdir bin
 if not exist obj mkdir obj
 
-set "OPTS=/nologo /codepage:65001 /optimize+ /platform:anycpu"
+set "OPTS=/nologo /preferreduilang:en-US /codepage:65001 /optimize+ /platform:anycpu"
 set "REFS=/r:System.dll /r:System.Core.dll /r:System.Drawing.dll /r:System.Windows.Forms.dll /r:System.ServiceProcess.dll"
 
 rem 1. The .exe icon is drawn by the same code as the in-app logo (src\Logo.cs).
-"%CSC%" %OPTS% /target:exe /out:obj\MakeIcon.exe %REFS% tools\MakeIcon.cs src\Logo.cs src\Theme.cs
+"%CSC%" %OPTS% /target:exe /out:obj\MakeIcon.exe %REFS% tools\MakeIcon.cs src\Logo.cs src\Theme.cs src\Settings.cs
 if errorlevel 1 goto failed
 obj\MakeIcon.exe obj\app.ico
 if errorlevel 1 goto failed
@@ -25,6 +25,13 @@ if errorlevel 1 goto failed
 rem 2. The application.
 "%CSC%" %OPTS% /target:winexe /out:bin\Lighter.exe /win32manifest:app.manifest /win32icon:obj\app.ico %REFS% src\*.cs
 if errorlevel 1 goto failed
+
+rem build.cmd dev: also bin\Lighter.dev.exe that runs without elevation (for testing the interface).
+if /i "%~1"=="dev" (
+  powershell -NoProfile -Command "(Get-Content app.manifest) -replace 'requireAdministrator','asInvoker' | Set-Content obj\dev.manifest -Encoding UTF8"
+  "%CSC%" %OPTS% /target:winexe /out:bin\Lighter.dev.exe /win32manifest:obj\dev.manifest /win32icon:obj\app.ico %REFS% src\*.cs
+  if errorlevel 1 goto failed
+)
 
 echo Build OK: %CD%\bin\Lighter.exe
 exit /b 0

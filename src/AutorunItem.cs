@@ -5,22 +5,14 @@ namespace Lighter
 {
     enum SourceKind { Registry, StartupFolder, Task, Service }
 
-    enum RowKind { Normal, Dim, Danger }
+    /// <summary>Registry places beyond Run/RunOnce (see <see cref="ExtraLocations"/>).</summary>
+    enum Special { None, Winlogon, Ifeo, ActiveSetup, BootExecute, AppInit }
 
     /// <summary>Task Scheduler trigger types of a task; Unknown = the task definition could not be read.</summary>
     [Flags]
     enum TaskTriggers
     {
         Unknown = 0, Logon = 1, Boot = 2, Schedule = 4, Idle = 8, Event = 16, Session = 32, Registration = 64,
-    }
-
-    /// <summary>What the list needs to draw a row: text color, icon and status dot.</summary>
-    interface IRowInfo
-    {
-        RowKind RowKind { get; }
-        string IconPath { get; }
-        /// <summary>0 = none, 1 = on (green), 2 = off (gray), 3 = problem (red).</summary>
-        int Dot { get; }
     }
 
     class AutorunItem : IRowInfo
@@ -34,7 +26,17 @@ namespace Lighter
         public bool CanToggle;
         public bool CanDelete;
         public bool FileExists = true;
+        /// <summary>Part of Windows: signed by Microsoft, or a task in the \Microsoft folder.</summary>
         public bool IsSystem;
+        /// <summary>The file whose signature counts (the service DLL for svchost services).</summary>
+        public string SignPath = "";
+        public SigInfo Sig = SigInfo.NoFile;
+        public Special Special;
+        /// <summary>The entry can only be put back to the Windows default value, not removed (Winlogon in HKLM).</summary>
+        public bool ResetToDefault;
+        /// <summary>Not a Windows default: never hidden as "system", even when the file is signed by Microsoft.</summary>
+        public bool AlwaysShow;
+        public string DefaultValue;
 
         // Registry / startup folder
         public UserProfile User;     // whose HKCU / Startup folder; null = all users (HKLM, common folder)
@@ -55,6 +57,7 @@ namespace Lighter
         public string ServiceName;
         public bool Delayed;
         public bool? Running;
+        public string Account = "";  // account a service runs as
 
         // State and location are built on demand so they follow the current UI language.
         public string StateText
@@ -76,24 +79,18 @@ namespace Lighter
                 switch (Kind)
                 {
                     case SourceKind.Registry:
-                        return L.T("Реестр: ", "Registry: ") + RegLabel + (Wow32 ? L.T(" (32-бит)", " (32-bit)") : "") + UserSuffix;
+                        return L.T("Реестр: ", "Registry: ") + RegLabel + (Wow32 ? L.T(" (32-бит)", " (32-bit)") : "");
                     case SourceKind.StartupFolder:
-                        return CommonFolder ? L.T("Папка автозагрузки · все пользователи", "Startup folder · all users")
-                            : L.T("Папка автозагрузки", "Startup folder") + UserSuffix;
+                        return CommonFolder ? L.T("Папка автозагрузки (общая)", "Startup folder (common)")
+                            : L.T("Папка автозагрузки", "Startup folder");
                     case SourceKind.Task:
-                        return L.T("Планировщик: ", "Scheduler: ") + TaskFolder + " · " + TriggerText(Triggers)
-                            + (RunAs.Length > 0 ? " · " + RunAs : "");
+                        return L.T("Планировщик: ", "Scheduler: ") + TaskFolder + " · " + TriggerText(Triggers);
                     default:
                         string state = !Running.HasValue ? ""
                             : " · " + (Running.Value ? L.T("работает", "running") : L.T("остановлена", "stopped"));
                         return L.T("Служба: ", "Service: ") + ServiceName + state;
                 }
             }
-        }
-
-        string UserSuffix
-        {
-            get { return User == null ? "" : " · " + User.Name; }
         }
 
         static string TriggerText(TaskTriggers t)
@@ -110,6 +107,42 @@ namespace Lighter
             return string.Join(", ", parts);
         }
 
+        /// <summary>Whose entry it is: a user profile, everyone, or the account a task/service runs as.</summary>
+        public string UserName
+        {
+            get
+            {
+                if (Kind == SourceKind.Task) return RunAs;
+                if (Kind == SourceKind.Service) return Account;
+                return User != null ? User.Name : L.T("Для всех", "Everyone");
+            }
+        }
+
+        /// <summary>
+        /// The Publisher column: the verified signer, or why there is none ("Not signed · company from the file",
+        /// which anyone can write into a file, so it is shown only as a hint).
+        /// </summary>
+        public string PublisherText
+        {
+            get
+            {
+                string company = Publisher.Length > 0 ? " · " + Publisher : "";
+                switch (Sig.State)
+                {
+                    case SigState.Signed: return Sig.Signer;
+                    case SigState.Invalid: return L.T("Подпись недействительна", "Invalid signature") + company;
+                    case SigState.Unsigned: return L.T("Нет подписи", "Not signed") + company;
+                    default: return Publisher;
+                }
+            }
+        }
+
+        /// <summary>Signed by nobody (or not validly): worth a look.</summary>
+        public bool Unsigned
+        {
+            get { return Sig.State == SigState.Unsigned || Sig.State == SigState.Invalid; }
+        }
+
         public RowKind RowKind
         {
             get { return !FileExists ? RowKind.Danger : (!Enabled ? RowKind.Dim : RowKind.Normal); }
@@ -122,7 +155,8 @@ namespace Lighter
 
         public int Dot
         {
-            get { return !Enabled ? 2 : (FileExists ? 1 : 3); }
+            // gray: off, red: file missing, amber: no valid signature, green: fine
+            get { return !Enabled ? 2 : (!FileExists ? 3 : (Unsigned ? 5 : 1)); }
         }
 
         /// <summary>The file to show in Explorer: the shortcut itself for startup-folder entries.</summary>
@@ -141,6 +175,11 @@ namespace Lighter
             {
                 case SourceKind.Registry:
                 case SourceKind.StartupFolder:
+                    if (it.Special != Special.None)
+                    {
+                        ExtraLocations.SetEnabled(it, enabled);
+                        break;
+                    }
                     if (it.ApprovedSub == null)
                         throw new InvalidOperationException(L.T("Эту запись нельзя отключить, только удалить.", "This entry cannot be disabled, only deleted."));
                     using (var root = HiveRoot.Open(it.User, true))
@@ -162,7 +201,7 @@ namespace Lighter
         {
             switch (it.Kind)
             {
-                case SourceKind.Registry: return RegistryRunSource.Delete(it);
+                case SourceKind.Registry: return it.Special != Special.None ? ExtraLocations.Delete(it) : RegistryRunSource.Delete(it);
                 case SourceKind.StartupFolder: return StartupFolderSource.Delete(it);
                 case SourceKind.Task: return TaskSchedulerSource.Delete(it);
                 default: throw new InvalidOperationException(L.T("Службы не удаляются — их можно только отключить.", "Services are not deleted, only disabled."));

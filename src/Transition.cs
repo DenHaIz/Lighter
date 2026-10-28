@@ -16,6 +16,12 @@ namespace Lighter
     {
         static readonly List<Overlay> active = new List<Overlay>();
 
+        /// <summary>Ends every running transition at its final picture (before a layout-wide change).</summary>
+        public static void FinishAll()
+        {
+            foreach (var o in active.ToArray()) o.Finish();
+        }
+
         public static void CrossFade(Control target, Action change, int ms = 200, int slideX = 0)
         {
             if (target == null || target.Parent == null || !target.IsHandleCreated || !target.Visible ||
@@ -26,13 +32,25 @@ namespace Lighter
             }
 
             Overlay ov = null;
+            var inner = new List<Overlay>();
             foreach (var o in active.ToArray())
             {
                 if (o.Target == target) ov = o;
-                else if (target.Contains(o)) o.Finish(); // nested overlay would end up inside the snapshot
+                else if (target.Contains(o)) inner.Add(o);
+                else if (o.Target.Contains(target))
+                {
+                    // An enclosing area is mid-transition toward a picture taken before this change.
+                    // Changing now would pop in when that overlay lifts: run this one right after it.
+                    o.Then(() => CrossFade(target, change, ms, slideX));
+                    return;
+                }
             }
 
-            GdiBitmap before = ov != null ? ov.CaptureCurrent() : GdiBitmap.Snap(target);
+            double t0 = Anim.Now;
+            // The snapshot includes inner overlays mid-fade (they paint themselves), so ending them
+            // afterwards is invisible.
+            GdiBitmap before = ov != null ? ov.CaptureCurrent() : (GdiBitmap.CopyFromScreen(target) ?? GdiBitmap.Snap(target));
+            foreach (var o in inner) o.Finish();
             if (before == null)
             {
                 if (ov != null) ov.Finish();
@@ -48,12 +66,17 @@ namespace Lighter
             }
             ov.Hold(before);   // the screen now shows "before", whatever happens below
             ov.Update();
+            double t1 = Anim.Now;
 
             change();
+            double t2 = Anim.Now;
 
             GdiBitmap after = GdiBitmap.Snap(target);
             if (after == null) { ov.Finish(); return; }
             ov.Start(after, slideX, ms);
+            if (Anim.FrameLog != null)
+                Anim.Log(string.Format(System.Globalization.CultureInfo.InvariantCulture, "T\t{0:F1}\t{1}\tbefore {2:F1}\tchange {3:F1}\tafter {4:F1}",
+                    t0, target.GetType().Name + " " + target.Width + "x" + target.Height, t1 - t0, t2 - t1, Anim.Now - t2));
         }
 
         class Overlay : Control
@@ -64,6 +87,14 @@ namespace Lighter
             float t;
             bool finished;
             readonly object key = new object();
+            List<Action> then;
+
+            /// <summary>Runs once this overlay has lifted (on the next frame).</summary>
+            public void Then(Action a)
+            {
+                if (then == null) then = new List<Action>();
+                then.Add(a);
+            }
 
             public Overlay(Control target)
             {
@@ -118,9 +149,11 @@ namespace Lighter
 
             protected override void OnPaint(PaintEventArgs e)
             {
+                double t0 = Anim.FrameLog != null ? Anim.Now : 0;
                 IntPtr hdc = e.Graphics.GetHdc();
                 try { Compose(hdc); }
                 finally { e.Graphics.ReleaseHdc(hdc); }
+                if (t0 > 0) Anim.Log("O " + Width + "x" + Height + " " + (Anim.Now - t0).ToString("F1", System.Globalization.CultureInfo.InvariantCulture));
             }
 
             public void Finish()
@@ -131,6 +164,13 @@ namespace Lighter
                 active.Remove(this);
                 if (Parent != null) Parent.Controls.Remove(this);
                 Dispose();
+                if (then != null)
+                {
+                    var queued = then;
+                    then = null;
+                    // Not inline: Finish may run in the middle of another transition's setup.
+                    Anim.Delay(1, () => { foreach (var a in queued) a(); });
+                }
             }
 
             protected override void Dispose(bool disposing)
@@ -142,6 +182,34 @@ namespace Lighter
                 }
                 base.Dispose(disposing);
             }
+        }
+    }
+
+    static class WindowFx
+    {
+        [DllImport("user32.dll")]
+        static extern bool RedrawWindow(IntPtr hwnd, IntPtr rect, IntPtr region, uint flags);
+
+        /// <summary>
+        /// Fade-in is done: drops the layered style (layered windows repaint slower, which shows in
+        /// every later animation) and redraws the window whole.
+        /// </summary>
+        /// <summary>
+        /// Paints the whole window now, while it is still transparent: the first paint (with code
+        /// being compiled on first use) takes long enough to eat the start of a fade-in.
+        /// </summary>
+        public static void PaintNow(Form f)
+        {
+            // RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW
+            if (f.IsHandleCreated) RedrawWindow(f.Handle, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0004 | 0x0080 | 0x0100);
+        }
+
+        public static void EndFade(Form f)
+        {
+            f.Opacity = 1;
+            f.AllowTransparency = false;
+            // RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN
+            if (f.IsHandleCreated) RedrawWindow(f.Handle, IntPtr.Zero, IntPtr.Zero, 0x0001 | 0x0004 | 0x0400 | 0x0080);
         }
     }
 
@@ -191,6 +259,29 @@ namespace Lighter
                 return b;
             }
             finally { ReleaseDC(IntPtr.Zero, screen); }
+        }
+
+        /// <summary>
+        /// Copies what the control shows right now from the window's surface: a single blit, where
+        /// re-rendering it (Snap) costs tens of milliseconds for a page full of lists. Null when the
+        /// surface cannot be trusted (window hidden, minimized, still fading in, control clipped).
+        /// </summary>
+        public static GdiBitmap CopyFromScreen(Control c)
+        {
+            var form = c.FindForm();
+            if (form == null || !form.Visible || form.WindowState == FormWindowState.Minimized || form.AllowTransparency) return null;
+            var inForm = form.RectangleToClient(c.RectangleToScreen(c.ClientRectangle));
+            if (!form.ClientRectangle.Contains(inForm)) return null;
+            for (var p = c.Parent; p != null && p != form; p = p.Parent)
+                if (!p.ClientRectangle.Contains(p.RectangleToClient(c.RectangleToScreen(c.ClientRectangle)))) return null;
+            var b = Create(c.Width, c.Height);
+            if (b == null) return null;
+            IntPtr src = GetDC(c.Handle);
+            bool ok;
+            try { ok = BitBlt(b.Dc, 0, 0, c.Width, c.Height, src, 0, 0, SRCCOPY); }
+            finally { ReleaseDC(c.Handle, src); }
+            if (!ok) { b.Dispose(); return null; }
+            return b;
         }
 
         /// <summary>Renders a control and its visible children off-screen (WM_PRINT), without touching the screen.</summary>

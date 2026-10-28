@@ -82,6 +82,46 @@ namespace Lighter
         }
     }
 
+    /// <summary>One name per account, whichever way a task or service spells it (SID, "NT AUTHORITY\…", localized).</summary>
+    static class Accounts
+    {
+        public const string System = "SYSTEM", LocalService = "LOCAL SERVICE", NetworkService = "NETWORK SERVICE";
+
+        static readonly Dictionary<string, string> cache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+
+        public static string Name(string id)
+        {
+            if (string.IsNullOrEmpty(id)) return "";
+            lock (cache)
+            {
+                string hit;
+                if (cache.TryGetValue(id, out hit)) return hit;
+            }
+            string name = id;
+            if (id.StartsWith("S-1-", StringComparison.Ordinal))
+            {
+                if (id == "S-1-5-18") name = System;
+                else if (id == "S-1-5-19") name = LocalService;
+                else if (id == "S-1-5-20") name = NetworkService;
+                else
+                {
+                    try { name = new SecurityIdentifier(id).Translate(typeof(NTAccount)).Value; }
+                    catch { }
+                }
+            }
+            int slash = name.LastIndexOf('\\');
+            if (slash >= 0) name = name.Substring(slash + 1);
+            switch (name.Replace(" ", "").ToUpperInvariant())
+            {
+                case "SYSTEM": case "LOCALSYSTEM": case "СИСТЕМА": name = System; break;
+                case "LOCALSERVICE": name = LocalService; break;
+                case "NETWORKSERVICE": name = NetworkService; break;
+            }
+            lock (cache) cache[id] = name;
+            return name;
+        }
+    }
+
     /// <summary>
     /// The registry root of HKLM (user == null) or of a user profile. A logged-on user's hive is in HKEY_USERS.
     /// The hive of a user who is not logged on is loaded from NTUSER.DAT only while this object lives
