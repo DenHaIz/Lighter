@@ -893,6 +893,14 @@ namespace Lighter
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == 0x204E /* WM_REFLECT | WM_NOTIFY */ && CustomDraw(ref m)) return;
+            if (m.Msg == 0x004E /* WM_NOTIFY from the header */ && ColumnWeights != null)
+            {
+                // The user starts dragging a divider (or double-clicks one): from now on the widths are theirs
+                // and only the last column stretches. Re-spreading by the weights snapped the column straight back.
+                int code = Marshal.ReadInt32(m.LParam, IntPtr.Size * 2);
+                if (code == -306 || code == -326 /* HDN_BEGINTRACK A/W */ || code == -305 || code == -325 /* HDN_DIVIDERDBLCLICK A/W */)
+                    ColumnWeights = null;
+            }
             double t0 = Anim.FrameLog != null && (m.Msg == 0x000F || m.Msg == 0x0318) ? Anim.Now : 0;
             base.WndProc(ref m);
             if (t0 > 0)

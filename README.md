@@ -1,4 +1,6 @@
-# Lighter
+<p align="center"><img src="docs/logo.png" width="96" alt="Lighter"></p>
+
+<h1 align="center">Lighter</h1>
 
 Windows startup manager in one small `.exe`.
 

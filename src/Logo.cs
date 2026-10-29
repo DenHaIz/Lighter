@@ -94,7 +94,44 @@ namespace Lighter
                     a += dash + gap;
                 }
             }
+            DrawFeather(g, ring / 2 - stroke, look);
             g.Restore(state);
+        }
+
+        /// <summary>
+        /// The pixel feather inside the ring: '#' = a square of the mark colour, '.' = empty (the gaps along
+        /// the diagonal are the shaft). Drawn as one path, so neighbouring squares have no seams.
+        /// </summary>
+        static readonly string[] Feather =
+        {
+            ".........#",
+            ".......###",
+            "......####",
+            ".....##.##",
+            "....##.###",
+            "...##.###.",
+            "..##.###..",
+            "..#.###...",
+            ".#.##.....",
+            ".#........",
+            "#.........",
+        };
+
+        /// <summary>inner: radius of the ring's hole (in the 256 box); the feather fills most of it.</summary>
+        static void DrawFeather(Graphics g, float inner, float look)
+        {
+            int n = Feather.Length, w = Feather[0].Length;
+            // Fewer, fatter "pixels" would not be pixels any more: below 24 px the hole is too small to read.
+            if (look < 24) return;
+            float cell = (float)Math.Floor(inner * 1.38f / n);
+            float ox = 128 - cell * w / 2f, oy = 128 - cell * n / 2f;
+            using (var path = new GraphicsPath { FillMode = FillMode.Winding })
+            {
+                for (int y = 0; y < n; y++)
+                    for (int x = 0; x < Feather[y].Length; x++)
+                        if (Feather[y][x] == '#') path.AddRectangle(new RectangleF(ox + x * cell, oy + y * cell, cell, cell));
+                using (var b = new SolidBrush(Mark)) g.FillPath(b, path);
+            }
         }
 
         /// <summary>
